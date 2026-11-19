@@ -148,14 +148,18 @@ function analyze(m, c1, mark) {
   if (Math.abs(f1.price - f1.e21) <= 1.5 * f1.atr) score += 1;
   var vr = volRatio(c1);
   if (vr != null && vr >= 1.2) score += 1;
-  // Extendido: precio ya pegado a la banda de Bollinger en la dirección de la señal
-  var ext = L ? f1.bb > 90 : f1.bb < 10;
+  var vol24 = parseFloat(m.ctx.dayNtlVlm);
+  // 3 filtros duros para ELITE/SUPER: volumen, banda de Bollinger y RSI
+  var okVol = vol24 >= 1e6 && vr != null && vr >= 1.0;
+  var okBB = f1.bb >= 20 && f1.bb <= 80;
+  var okRSI = L ? (f1.rsi >= 45 && f1.rsi <= 65) : (f1.rsi >= 35 && f1.rsi <= 55);
   var tier = score >= 8 ? 'ELITE' : score >= 7 ? 'SUPER' : score >= 5 ? 'PREP' : null;
   if (!tier) return null;
-  if (ext || (vr != null && vr < MIN_VOL)) tier = 'PREP';
+  if (!(okVol && okBB && okRSI)) tier = 'PREP';
   return { name: m.name.replace(DEX + ':', ''), full: m.name, dir: dir, tier: tier, score: score, price: mark || f1.price,
-    atr: f1.atr, rsi1: f1.rsi, rsi4: f4.rsi, k1: f1.k, bb: f1.bb, vr: vr, ext: ext,
-    maxLev: m.maxLev, fund: parseFloat(m.ctx.funding) * 100, vol: parseFloat(m.ctx.dayNtlVlm) };
+    atr: f1.atr, rsi1: f1.rsi, rsi4: f4.rsi, k1: f1.k, bb: f1.bb, vr: vr,
+    okVol: okVol, okBB: okBB, okRSI: okRSI,
+    maxLev: m.maxLev, fund: parseFloat(m.ctx.funding) * 100, vol: vol24 };
 }
 
 // ---------- escaneo ----------
@@ -217,11 +221,9 @@ function render() {
     var riskUsd = acc * rk / 100, size = riskUsd / slD, notional = size * s.price;
     var useLev = Math.min(lev, s.maxLev || lev), margin = notional / useLev;
     var warn = '';
-    if (s.ext) warn += '⚠ EXTENDIDO (BB% ' + s.bb.toFixed(0) + '): mejor esperar retroceso. ';
     if (margin > acc) warn += '⚠ El margen supera tu cuenta; baja el riesgo o sube el apalancamiento. ';
     else if (margin > 0.5 * acc) warn += '⚠ El margen usa más del 50 % de tu cuenta. ';
-    if (s.vol < 1e6) warn += '⚠ Baja liquidez (vol 24h menor de $1M). ';
-    if (s.vr != null && s.vr < MIN_VOL) warn += '⚠ Volumen bajo. ';
+
     return '<div class="card"><div class="top"><span class="name">' + esc(s.name) + ' <span class="' + s.dir + '">' + s.dir + '</span></span>' +
       '<span class="tag ' + s.tier + '">' + s.tier + ' ' + s.score + '/9</span></div>' +
       '<div class="row"><span>Precio <b>' + f(s.price) + '</b></span><span>SL <b>' + f(sl) + '</b></span><span>TP1 <b>' + f(tp1) +
@@ -231,6 +233,8 @@ function render() {
       '<div class="row"><span>RSI 1H <b>' + s.rsi1.toFixed(0) + '</b> / 4H <b>' + s.rsi4.toFixed(0) + '</b></span><span>StochK <b>' + s.k1.toFixed(0) +
       '</b></span><span>BB% <b>' + s.bb.toFixed(0) + '</b></span>' + (s.vr != null ? '<span>Vol <b>' + s.vr.toFixed(1) + 'x</b></span>' : '') + '</div>' +
       '<div class="row"><span>Vol 24h <b>$' + usd(s.vol) + '</b></span><span>Funding <b>' + s.fund.toFixed(4) + '%/h</b></span><span>Máx <b>' + s.maxLev + 'x</b></span></div>' +
+      '<div class="row"><span>Filtros: Volumen <b>' + (s.okVol ? '✓' : '✗') + '</b> · Banda <b>' + (s.okBB ? '✓' : '✗') +
+      '</b> · RSI <b>' + (s.okRSI ? '✓' : '✗') + '</b></span></div>' +
       (warn ? '<div class="warn">' + warn + '</div>' : '') +
       '<a class="hl" target="_blank" rel="noopener" href="https://app.hyperliquid.xyz/trade/' + esc(s.full) + '">Abrir en HL</a></div>';
   }).join('');
