@@ -47,7 +47,7 @@ a.hl{display:inline-block;margin-top:8px;font-size:13px;color:var(--super);text-
 var API = 'https://api.hyperliquid.xyz/info';
 var DEX = 'xyz';          // mercados HIP-3 de trade.xyz (acciones, índices, materias primas, divisas)
 var SL_ATR = 1.5, MIN_VOL = 0.7;
-var RESULTS = [], filter = 'TODAS', busy = false, timer = null;
+var RESULTS = [], filter = 'TOP', busy = false, timer = null;
 var $ = function (id) { return document.getElementById(id); };
 var sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
 function esc(s) { return String(s).replace(/[&<>"]/g, ''); }
@@ -199,16 +199,17 @@ async function scan() {
 // ---------- pintar ----------
 function f(n) { return n >= 100 ? n.toFixed(2) : n >= 1 ? n.toFixed(3) : n.toFixed(5); }
 function usd(n) { return n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(0) + 'K' : n.toFixed(0); }
+function match(s, t) { return t === 'TOP' ? (s.tier === 'ELITE' || s.tier === 'SUPER') : s.tier === t; }
 function render() {
   var tabs = $('tabs'); tabs.innerHTML = '';
-  ['TODAS', 'ELITE', 'SUPER', 'PREP'].forEach(function (t) {
-    var n = RESULTS.filter(function (s) { return t === 'TODAS' || s.tier === t; }).length;
-    var b = document.createElement('button'); b.textContent = t + ' (' + n + ')';
+  ['TOP', 'ELITE', 'SUPER', 'PREP'].forEach(function (t) {
+    var n = RESULTS.filter(function (s) { return match(s, t); }).length;
+    var b = document.createElement('button'); b.textContent = (t === 'TOP' ? 'ELITE+SUPER' : t) + ' (' + n + ')';
     if (t === filter) b.className = 'on';
     b.onclick = function () { filter = t; render(); }; tabs.appendChild(b);
   });
   var acc = parseFloat($('acc').value) || 0, rk = parseFloat($('rk').value) || 0, lev = parseFloat($('lev').value) || 1;
-  var items = RESULTS.filter(function (s) { return filter === 'TODAS' || s.tier === filter; });
+  var items = RESULTS.filter(function (s) { return match(s, filter); });
   if (!items.length) { $('out').innerHTML = '<div id="empty">Sin señales</div>'; return; }
   $('out').innerHTML = items.map(function (s) {
     var L = s.dir === 'LONG', slD = SL_ATR * s.atr, sg = L ? -1 : 1;
@@ -218,6 +219,8 @@ function render() {
     var warn = '';
     if (s.ext) warn += '⚠ EXTENDIDO (BB% ' + s.bb.toFixed(0) + '): mejor esperar retroceso. ';
     if (margin > acc) warn += '⚠ El margen supera tu cuenta; baja el riesgo o sube el apalancamiento. ';
+    else if (margin > 0.5 * acc) warn += '⚠ El margen usa más del 50 % de tu cuenta. ';
+    if (s.vol < 1e6) warn += '⚠ Baja liquidez (vol 24h menor de $1M). ';
     if (s.vr != null && s.vr < MIN_VOL) warn += '⚠ Volumen bajo. ';
     return '<div class="card"><div class="top"><span class="name">' + esc(s.name) + ' <span class="' + s.dir + '">' + s.dir + '</span></span>' +
       '<span class="tag ' + s.tier + '">' + s.tier + ' ' + s.score + '/9</span></div>' +
