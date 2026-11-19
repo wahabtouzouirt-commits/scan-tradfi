@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scanner HL · Índices y Acciones</title>
+<style>
+:root{--bg:#0e1116;--card:#171b22;--tx:#e8eaed;--mut:#9aa3af;--bd:#262c36;--long:#34d399;--short:#f87171;--elite:#fbbf24;--super:#60a5fa;--prep:#9aa3af}
+@media (prefers-color-scheme:light){:root{--bg:#f6f7f9;--card:#fff;--tx:#14181f;--mut:#6b7280;--bd:#e3e6eb;--long:#0f9d58;--short:#d93025;--elite:#b45309;--super:#1d4ed8;--prep:#6b7280}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.4 system-ui,sans-serif;padding:12px;max-width:680px;margin-inline:auto}
+h1{font-size:18px;margin:2px 0 10px}
+.box{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:10px;display:grid;grid-template-columns:1fr 1fr;gap:8px}
+label{font-size:12px;color:var(--mut);display:flex;flex-direction:column;gap:3px}
+input[type=number]{background:var(--bg);color:var(--tx);border:1px solid var(--bd);border-radius:6px;padding:7px;font:inherit;width:100%}
+button{background:var(--card);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:8px 12px;font:inherit}
+button.on,#go{border-color:var(--super);color:var(--super);font-weight:600}
+.act{grid-column:1/3;display:flex;gap:10px;align-items:center;justify-content:space-between}
+.act label{flex-direction:row;align-items:center;gap:6px;font-size:13px}
+#st{color:var(--mut);font-size:13px;margin:10px 0}
+#tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:10px 12px;margin-bottom:8px}
+.top{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.name{font-weight:700;font-size:16px}
+.tag{font-size:12px;font-weight:700;padding:2px 8px;border-radius:99px;border:1px solid currentColor;white-space:nowrap}
+.ELITE{color:var(--elite)}.SUPER{color:var(--super)}.PREP{color:var(--prep)}.LONG{color:var(--long)}.SHORT{color:var(--short)}
+.row{display:flex;flex-wrap:wrap;gap:4px 14px;color:var(--mut);font-size:13px;margin-top:6px}
+.row b{color:var(--tx);font-weight:600}
+.warn{color:var(--elite);font-size:12px;margin-top:6px}
+a.hl{display:inline-block;margin-top:8px;font-size:13px;color:var(--super);text-decoration:none;border:1px solid var(--bd);border-radius:8px;padding:5px 10px}
+#empty{color:var(--mut);text-align:center;padding:30px 0}
+</style>
+</head>
+<body>
+<h1>Scanner HL · Índices y Acciones</h1>
+<div class="box">
+  <label>Cuenta (USDT)<input type="number" id="acc" value="300"></label>
+  <label>Riesgo (%)<input type="number" id="rk" value="1" step="0.1"></label>
+  <label>Apalancamiento<input type="number" id="lev" value="5"></label>
+  <label>Vol 24h mín ($)<input type="number" id="minv" value="100000"></label>
+  <div class="act"><button id="go">Escanear</button><label><input type="checkbox" id="auto"> auto cada 10 min</label></div>
+</div>
+<div id="st">Pulsa Escanear.</div>
+<div id="tabs"></div>
+<div id="out"></div>
+<script>
+var API = 'https://api.hyperliquid.xyz/info';
+var DEX = 'xyz';          // mercados HIP-3 de trade.xyz (acciones, índices, materias primas, divisas)
+var SL_ATR = 1.5, MIN_VOL = 0.7;
+var RESULTS = [], filter = 'TODAS', busy = false, timer = null;
+var $ = function (id) { return document.getElementById(id); };
+var sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
+function esc(s) { return String(s).replace(/[&<>"]/g, ''); }
+
+// guardar ajustes (solo en tu navegador)
+['acc', 'rk', 'lev', 'minv'].forEach(function (id) {
+  try { var v = localStorage.getItem('hlx_' + id); if (v) $(id).value = v; } catch (e) {}
+  $(id).addEventListener('change', function () { try { localStorage.setItem('hlx_' + id, $(id).value); } catch (e) {} });
+});
+
+async function post(body) {
+  for (var i = 0; i < 4; i++) {
+    var r = await fetch(API, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (r.ok) return r.json();
+    if (r.status === 429) { await sleep(1500 * (i + 1)); continue; }
+    throw new Error('HTTP ' + r.status);
+  }
+  throw new Error('límite de peticiones');
+}
+
+// ---------- indicadores ----------
+function ema(a, p) { var k = 2 / (p + 1), o = [a[0]]; for (var i = 1; i < a.length; i++) o.push(a[i] * k + o[i - 1] * (1 - k)); return o; }
+function rsi(a, p) {
+  p = p || 14; var o = new Array(a.length).fill(null);
+  if (a.length <= p) return o;
+  var g = 0, l = 0, i, d;
+  for (i = 1; i <= p; i++) { d = a[i] - a[i - 1]; if (d >= 0) g += d; else l -= d; }
+  g /= p; l /= p; o[p] = l === 0 ? 100 : 100 - 100 / (1 + g / l);
+  for (i = p + 1; i < a.length; i++) {
+    d = a[i] - a[i - 1];
+    g = (g * (p - 1) + Math.max(d, 0)) / p; l = (l * (p - 1) + Math.max(-d, 0)) / p;
+    o[i] = l === 0 ? 100 : 100 - 100 / (1 + g / l);
+  }
+  return o;
+}
+function stochK(a) {
+  var r = rsi(a), raw = [];
+  for (var i = 27; i < r.length; i++) {
+    var w = r.slice(i - 13, i + 1), mn = Math.min.apply(null, w), mx = Math.max.apply(null, w);
+    raw.push(mx === mn ? 50 : (r[i] - mn) / (mx - mn) * 100);
+  }
+  if (raw.length < 3) return null;
+  return raw.slice(-3).reduce(function (s, x) { return s + x; }, 0) / 3;
+}
+function atr(c, p) {
+  p = p || 14; var tr = [];
+  for (var i = 1; i < c.length; i++) tr.push(Math.max(c[i].h - c[i].l, Math.abs(c[i].h - c[i - 1].c), Math.abs(c[i].l - c[i - 1].c)));
+  var w = tr.slice(-p); return w.reduce(function (s, x) { return s + x; }, 0) / w.length;
+}
+function bbp(cl) {
+  if (cl.length < 20) return null;
+  var w = cl.slice(-20), m = w.reduce(function (s, x) { return s + x; }, 0) / 20;
+  var sd = Math.sqrt(w.reduce(function (s, x) { return s + (x - m) * (x - m); }, 0) / 20);
+  var lo = m - 2 * sd, hi = m + 2 * sd;
+  return hi === lo ? 50 : (cl[cl.length - 1] - lo) / (hi - lo) * 100;
+}
+function to4H(c) {
+  var by = {}, out = [];
+  c.forEach(function (k) { var key = Math.floor(k.t / 14400000); (by[key] = by[key] || []).push(k); });
+  Object.keys(by).sort(function (a, b) { return a - b; }).forEach(function (key) {
+    var g = by[key]; if (g.length !== 4) return;
+    out.push({ t: g[0].t, o: g[0].o, h: Math.max.apply(null, g.map(function (x) { return x.h; })),
+      l: Math.min.apply(null, g.map(function (x) { return x.l; })), c: g[3].c,
+      v: g.reduce(function (s, x) { return s + x.v; }, 0) });
+  });
+  return out;
+}
+function volRatio(c) {
+  var last = c[c.length - 1], h = new Date(last.t).getUTCHours();
+  var prev = c.slice(0, -1).filter(function (x) { return new Date(x.t).getUTCHours() === h; }).slice(-10);
+  if (prev.length < 5) return null;
+  var avg = prev.reduce(function (s, x) { return s + x.v; }, 0) / prev.length;
+  return avg > 0 ? last.v / avg : null;
+}
+function frame(c) {
+  var cl = c.map(function (x) { return x.c; }), n = cl.length - 1;
+  return { price: cl[n], e9: ema(cl, 9)[n], e21: ema(cl, 21)[n], e50: ema(cl, 50)[n],
+    rsi: rsi(cl)[n], k: stochK(cl), atr: atr(c), bb: bbp(cl) };
+}
+
+// ---------- señal ----------
+function analyze(m, c1, mark) {
+  var c4 = to4H(c1);
+  if (c1.length < 80 || c4.length < 55) return null;
+  var f1 = frame(c1), f4 = frame(c4);
+  if (f1.rsi == null || f4.rsi == null || f1.k == null || f1.bb == null) return null;
+  var dir = null;
+  if (f4.e21 > f4.e50 && f4.price > f4.e50) dir = 'LONG';
+  else if (f4.e21 < f4.e50 && f4.price < f4.e50) dir = 'SHORT';
+  if (!dir) return null;
+  var L = dir === 'LONG', score = 0;
+  score += (L ? (f4.e9 > f4.e21 && f4.e21 > f4.e50) : (f4.e9 < f4.e21 && f4.e21 < f4.e50)) ? 2 : 1;
+  if (L ? (f1.e9 > f1.e21 && f1.e21 > f1.e50) : (f1.e9 < f1.e21 && f1.e21 < f1.e50)) score += 2;
+  else if (L ? f1.e21 > f1.e50 : f1.e21 < f1.e50) score += 1;
+  if (L ? (f4.rsi >= 45 && f4.rsi <= 65) : (f4.rsi >= 35 && f4.rsi <= 55)) score += 1;
+  if (L ? (f1.rsi >= 45 && f1.rsi <= 65) : (f1.rsi >= 35 && f1.rsi <= 55)) score += 1;
+  if (L ? f1.k < 80 : f1.k > 20) score += 1;
+  if (Math.abs(f1.price - f1.e21) <= 1.5 * f1.atr) score += 1;
+  var vr = volRatio(c1);
+  if (vr != null && vr >= 1.2) score += 1;
+  // Extendido: precio ya pegado a la banda de Bollinger en la dirección de la señal
+  var ext = L ? f1.bb > 90 : f1.bb < 10;
+  var tier = score >= 8 ? 'ELITE' : score >= 7 ? 'SUPER' : score >= 5 ? 'PREP' : null;
+  if (!tier) return null;
+  if (ext || (vr != null && vr < MIN_VOL)) tier = 'PREP';
+  return { name: m.name.replace(DEX + ':', ''), full: m.name, dir: dir, tier: tier, score: score, price: mark || f1.price,
+    atr: f1.atr, rsi1: f1.rsi, rsi4: f4.rsi, k1: f1.k, bb: f1.bb, vr: vr, ext: ext,
+    maxLev: m.maxLev, fund: parseFloat(m.ctx.funding) * 100, vol: parseFloat(m.ctx.dayNtlVlm) };
+}
+
+// ---------- escaneo ----------
+async function scan() {
+  if (busy) return; busy = true; $('go').disabled = true;
+  var minv = parseFloat($('minv').value) || 0, found = [], errors = 0, done = 0;
+  try {
+    $('st').textContent = 'Cargando mercados…';
+    var res = await post({ type: 'metaAndAssetCtxs', dex: DEX });
+    var meta = res[0], ctxs = res[1];
+    var markets = meta.universe.map(function (u, i) { return { name: u.name, maxLev: u.maxLeverage, del: u.isDelisted, ctx: ctxs[i] }; })
+      .filter(function (m) { return !m.del && m.ctx && parseFloat(m.ctx.dayNtlVlm) >= minv; });
+    var queue = markets.slice(), total = markets.length;
+    async function worker() {
+      while (queue.length) {
+        var m = queue.shift();
+        try {
+          var raw = await post({ type: 'candleSnapshot', req: { coin: m.name, interval: '1h', startTime: Date.now() - 21 * 864e5 } });
+          var now = Date.now();
+          var c = raw.filter(function (k) { return k.T <= now; }).map(function (k) {
+            return { t: k.t, o: +k.o, h: +k.h, l: +k.l, c: +k.c, v: +k.v }; });
+          var s = analyze(m, c, parseFloat(m.ctx.markPx));
+          if (s) found.push(s);
+        } catch (e) { errors++; }
+        done++; $('st').textContent = 'Escaneando ' + done + '/' + total + '…';
+        await sleep(150);
+      }
+    }
+    await Promise.all([worker(), worker(), worker()]);
+    var rank = { ELITE: 0, SUPER: 1, PREP: 2 };
+    found.sort(function (a, b) { return rank[a.tier] - rank[b.tier] || b.score - a.score || b.vol - a.vol; });
+    RESULTS = found;
+    $('st').textContent = found.length + ' señales de ' + total + ' mercados · ' + new Date().toLocaleTimeString('es-ES') +
+      (errors ? ' · ' + errors + ' con error' : '');
+  } catch (e) {
+    $('st').textContent = 'Error: ' + e.message;
+  }
+  busy = false; $('go').disabled = false; render();
+}
+
+// ---------- pintar ----------
+function f(n) { return n >= 100 ? n.toFixed(2) : n >= 1 ? n.toFixed(3) : n.toFixed(5); }
+function usd(n) { return n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(0) + 'K' : n.toFixed(0); }
+function render() {
+  var tabs = $('tabs'); tabs.innerHTML = '';
+  ['TODAS', 'ELITE', 'SUPER', 'PREP'].forEach(function (t) {
+    var n = RESULTS.filter(function (s) { return t === 'TODAS' || s.tier === t; }).length;
+    var b = document.createElement('button'); b.textContent = t + ' (' + n + ')';
+    if (t === filter) b.className = 'on';
+    b.onclick = function () { filter = t; render(); }; tabs.appendChild(b);
+  });
+  var acc = parseFloat($('acc').value) || 0, rk = parseFloat($('rk').value) || 0, lev = parseFloat($('lev').value) || 1;
+  var items = RESULTS.filter(function (s) { return filter === 'TODAS' || s.tier === filter; });
+  if (!items.length) { $('out').innerHTML = '<div id="empty">Sin señales</div>'; return; }
+  $('out').innerHTML = items.map(function (s) {
+    var L = s.dir === 'LONG', slD = SL_ATR * s.atr, sg = L ? -1 : 1;
+    var sl = s.price + sg * slD, tp1 = s.price - sg * 1.5 * slD, tp2 = s.price - sg * 2.5 * slD;
+    var riskUsd = acc * rk / 100, size = riskUsd / slD, notional = size * s.price;
+    var useLev = Math.min(lev, s.maxLev || lev), margin = notional / useLev;
+    var warn = '';
+    if (s.ext) warn += '⚠ EXTENDIDO (BB% ' + s.bb.toFixed(0) + '): mejor esperar retroceso. ';
+    if (margin > acc) warn += '⚠ El margen supera tu cuenta; baja el riesgo o sube el apalancamiento. ';
+    if (s.vr != null && s.vr < MIN_VOL) warn += '⚠ Volumen bajo. ';
+    return '<div class="card"><div class="top"><span class="name">' + esc(s.name) + ' <span class="' + s.dir + '">' + s.dir + '</span></span>' +
+      '<span class="tag ' + s.tier + '">' + s.tier + ' ' + s.score + '/9</span></div>' +
+      '<div class="row"><span>Precio <b>' + f(s.price) + '</b></span><span>SL <b>' + f(sl) + '</b></span><span>TP1 <b>' + f(tp1) +
+      '</b></span><span>TP2 <b>' + f(tp2) + '</b></span></div>' +
+      '<div class="row"><span>Tamaño <b>' + size.toFixed(size >= 10 ? 1 : 3) + '</b></span><span>Nocional <b>$' + notional.toFixed(0) +
+      '</b></span><span>Margen <b>$' + margin.toFixed(1) + '</b> (' + useLev + 'x)</span><span>Riesgo <b>$' + riskUsd.toFixed(2) + '</b></span></div>' +
+      '<div class="row"><span>RSI 1H <b>' + s.rsi1.toFixed(0) + '</b> / 4H <b>' + s.rsi4.toFixed(0) + '</b></span><span>StochK <b>' + s.k1.toFixed(0) +
+      '</b></span><span>BB% <b>' + s.bb.toFixed(0) + '</b></span>' + (s.vr != null ? '<span>Vol <b>' + s.vr.toFixed(1) + 'x</b></span>' : '') + '</div>' +
+      '<div class="row"><span>Vol 24h <b>$' + usd(s.vol) + '</b></span><span>Funding <b>' + s.fund.toFixed(4) + '%/h</b></span><span>Máx <b>' + s.maxLev + 'x</b></span></div>' +
+      (warn ? '<div class="warn">' + warn + '</div>' : '') +
+      '<a class="hl" target="_blank" rel="noopener" href="https://app.hyperliquid.xyz/trade/' + esc(s.full) + '">Abrir en HL</a></div>';
+  }).join('');
+}
+
+$('go').onclick = scan;
+['acc', 'rk', 'lev'].forEach(function (id) { $(id).addEventListener('input', render); });
+$('auto').onchange = function () {
+  clearInterval(timer);
+  if ($('auto').checked) timer = setInterval(scan, 600000);
+};
+</script>
+</body>
+</html>
